@@ -42,8 +42,8 @@ uint32_t validPacketCount = 0;
 uint32_t invalidPacketCount = 0;
 uint32_t ignoredFrameCount = 0;
 uint32_t checksumFailureCount = 0;
-String logFilename = "";
-String binaryFilename = "";
+String logFilename = "current-log.txt";
+String binaryFilename = "current-data.bin";
 
 uint8_t checksumI2CPayload(const uint8_t *payload, uint8_t payloadSize) {
   uint8_t checksum = 0;
