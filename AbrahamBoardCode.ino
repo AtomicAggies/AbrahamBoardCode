@@ -1,11 +1,11 @@
 #include <Wire.h>
 #include <SD.h>
 #include <SPI.h>
+#include <TelemetryData.h>
 
 const int chipSelect = BUILTIN_SDCARD;
 
 const uint8_t I2C_RECEIVE_ADDRESS = 0x00;
-const uint8_t TELEMETRY_PACKET_SIZE = 98;
 const uint8_t I2C_FRAME_MAX_SIZE = 32;
 const uint8_t I2C_FRAME_HEADER_SIZE = 2;
 const uint8_t I2C_FRAME_PAYLOAD_SIZE = I2C_FRAME_MAX_SIZE - I2C_FRAME_HEADER_SIZE;
@@ -32,8 +32,9 @@ volatile uint8_t frameQueueTail = 0;
 volatile uint16_t droppedFrameCount = 0;
 I2CFrame frameQueue[FRAME_QUEUE_SIZE];
 
-uint8_t telemetryBuffer[TELEMETRY_PACKET_SIZE];
+uint8_t telemetryBuffer[TELEMETRY_PACKET_MAX_BYTES];
 uint8_t telemetryBufferLength = 0;
+uint8_t expectedPacketBytes = 0;
 bool receivingPacket = false;
 unsigned long lastPacketFrameMillis = 0;
 
@@ -49,7 +50,7 @@ uint8_t checksumI2CPayload(const uint8_t *payload, uint8_t payloadSize) {
   uint8_t checksum = 0;
   for (uint8_t index = 0; index < payloadSize; index++) {
     checksum += payload[index];
-  }
+  } 
   return checksum;
 }
 
@@ -72,11 +73,14 @@ void appendLog(const String &message) {
 void discardPartialPacket(const String &reason) {
   if (receivingPacket || telemetryBufferLength > 0) {
     invalidPacketCount++;
+    String expectStr =
+        expectedPacketBytes > 0 ? String(expectedPacketBytes) : String("?");
     appendLog("Discarded partial telemetry packet (" + String(telemetryBufferLength) +
-              "/" + String(TELEMETRY_PACKET_SIZE) + " bytes): " + reason);
+              "/" + expectStr + " bytes): " + reason);
   }
 
   telemetryBufferLength = 0;
+  expectedPacketBytes = 0;
   receivingPacket = false;
   lastPacketFrameMillis = 0;
 }
@@ -92,16 +96,29 @@ void writeTelemetryPacket() {
     return;
   }
 
-  size_t bytesWritten = binaryFile.write(telemetryBuffer, TELEMETRY_PACKET_SIZE);
+  uint8_t recordBytes = telemetryBuffer[0];
+  if (recordBytes < 2 || recordBytes > TELEMETRY_PACKET_MAX_BYTES) {
+    invalidPacketCount++;
+    appendLog("ERROR: invalid wireLength for SD write");
+    return;
+  }
+  if (recordBytes != telemetryBufferLength) {
+    invalidPacketCount++;
+    appendLog("ERROR: wireLength does not match assembled length");
+    return;
+  }
+
+  size_t bytesWritten = binaryFile.write(telemetryBuffer, recordBytes);
   binaryFile.close();
 
-  if (bytesWritten == TELEMETRY_PACKET_SIZE) {
+  if (bytesWritten == recordBytes) {
     validPacketCount++;
-    appendLog("Wrote telemetry packet " + String(validPacketCount) + " to " + binaryFilename);
+    appendLog("Wrote telemetry packet " + String(validPacketCount) + " to " + binaryFilename +
+              " (" + String(recordBytes) + " bytes)");
   } else {
     invalidPacketCount++;
     appendLog("ERROR: short SD write for telemetry packet (" + String(bytesWritten) +
-              "/" + String(TELEMETRY_PACKET_SIZE) + " bytes written)");
+              "/" + String(recordBytes) + " bytes written)");
   }
 }
 
@@ -134,8 +151,9 @@ void processI2CFrame(const I2CFrame &frame) {
   }
 
   if (isStartFrame) {
-    discardPartialPacket("new telemetry packet started before 98 bytes were received");
+    discardPartialPacket("new telemetry packet started before previous packet was complete");
     telemetryBufferLength = 0;
+    expectedPacketBytes = 0;
     receivingPacket = true;
     lastPacketFrameMillis = millis();
   } else if (!receivingPacket) {
@@ -149,8 +167,8 @@ void processI2CFrame(const I2CFrame &frame) {
     return;
   }
 
-  if (telemetryBufferLength + payloadSize > TELEMETRY_PACKET_SIZE) {
-    discardPartialPacket("I2C frame would overflow 98-byte telemetry buffer");
+  if (telemetryBufferLength + payloadSize > TELEMETRY_PACKET_MAX_BYTES) {
+    discardPartialPacket("I2C frame would overflow telemetry buffer");
     return;
   }
 
@@ -158,13 +176,32 @@ void processI2CFrame(const I2CFrame &frame) {
   telemetryBufferLength += payloadSize;
   lastPacketFrameMillis = millis();
 
+  if (telemetryBufferLength >= 1 && expectedPacketBytes == 0) {
+    expectedPacketBytes = telemetryBuffer[0];
+    if (expectedPacketBytes < 2 ||
+        expectedPacketBytes > TELEMETRY_PACKET_MAX_BYTES) {
+      discardPartialPacket("invalid wireLength in telemetry header");
+      return;
+    }
+  }
+
+  if (expectedPacketBytes > 0 &&
+      telemetryBufferLength > expectedPacketBytes) {
+    discardPartialPacket("received more bytes than wireLength");
+    return;
+  }
+
+  String targetStr =
+      expectedPacketBytes > 0 ? String(expectedPacketBytes) : String("?");
   appendLog("Accepted I2C frame payload (" + String(payloadSize) + " bytes, " +
-            String(telemetryBufferLength) + "/" + String(TELEMETRY_PACKET_SIZE) +
+            String(telemetryBufferLength) + "/" + targetStr +
             " packet bytes buffered)");
 
-  if (telemetryBufferLength == TELEMETRY_PACKET_SIZE) {
+  if (expectedPacketBytes > 0 &&
+      telemetryBufferLength == expectedPacketBytes) {
     writeTelemetryPacket();
     telemetryBufferLength = 0;
+    expectedPacketBytes = 0;
     receivingPacket = false;
     lastPacketFrameMillis = 0;
   }
@@ -263,7 +300,9 @@ void setup() {
 
   createLogFiles();
   appendLog("Logging to " + logFilename + " and raw telemetry to " + binaryFilename);
-  appendLog("Listening for 98-byte telemetry packets on I2C address 0x" +
+  appendLog("Listening for length-prefixed telemetry (max " +
+            String(TELEMETRY_PACKET_MAX_BYTES) +
+            " bytes/record) on I2C address 0x" +
             String(I2C_RECEIVE_ADDRESS, HEX));
 }
 
@@ -288,7 +327,7 @@ void loop() {
 
   if (receivingPacket && lastPacketFrameMillis != 0 &&
       millis() - lastPacketFrameMillis > PACKET_RECEIVE_TIMEOUT_MS) {
-    discardPartialPacket("timed out before 98 bytes were received");
+    discardPartialPacket("timed out before full telemetry packet received");
   }
 }
 
