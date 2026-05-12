@@ -5,7 +5,7 @@
 
 const int chipSelect = BUILTIN_SDCARD;
 
-const uint8_t I2C_RECEIVE_ADDRESS = 0x00;
+const uint8_t I2C_RECEIVE_ADDRESS = 0x09;
 const uint8_t I2C_FRAME_MAX_SIZE = 32;
 const uint8_t I2C_FRAME_HEADER_SIZE = 2;
 const uint8_t I2C_FRAME_PAYLOAD_SIZE = I2C_FRAME_MAX_SIZE - I2C_FRAME_HEADER_SIZE;
