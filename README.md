@@ -73,3 +73,28 @@ During operation:
 ## Related Tooling
 
 - Spencer repo includes `telemetry_packet_viewer.py`, which decodes the same 98-byte packet format written by Abraham to `current-data.bin`.
+
+## Debug guide
+
+### Status LEDs
+
+This firmware does **not** drive a status LED. There is no on-board blink pattern for I2C or SD activity.
+
+### UART / serial
+
+This firmware does **not** call `Serial` or `Serial1`. Runtime diagnostics go to the **SD card**:
+
+- **`current-log.txt`** — human-readable timestamps (`millis()`), I2C/assembly errors, write results, queue overflows.
+- **`current-data.bin`** — raw length-prefixed telemetry records (same layout as `TelemetryData` on the wire).
+
+If you add **Serial1** logging on a **Teensy**, use a **3.3 V** USB–UART adapter:
+
+- **GND** — common ground with the Teensy  
+- **Adapter RX** → **Teensy TX1 (pin 1)**  
+- **Adapter TX** → **Teensy RX1 (pin 0)**  
+
+Use **115200** baud unless you change it in code. Do not use 5 V TTL on Teensy pins.
+
+### I2C
+
+Abraham listens as I2C slave **0x09** and only accepts frames with the **SD** destination bit set (header byte 0 bit 0). See `AbrahamBoardCode.ino` for framing constants.
